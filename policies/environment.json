@@ -1,0 +1,13 @@
+{
+  "_comment": "Vpc_Range is set to loopback (127.0.0.0/8) so the local dev/demo walkthrough in README.md works out of the box over curl from localhost. Point it at your real corporate VPC CIDR(s) in production.",
+  "cidr_ranges": {
+    "Vpc_Range": "127.0.0.0/8",
+    "Office_Range": "203.0.113.0/24"
+  },
+  "business_hours": {
+    "timezone": "America/New_York",
+    "days": [1, 2, 3, 4, 5],
+    "start_hour": 9,
+    "end_hour": 18
+  }
+}

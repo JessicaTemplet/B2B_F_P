@@ -1,0 +1,5 @@
+/bin/
+/data/*.db
+/data/saml-keys/
+/data/fakeidp.key.pem
+/policies/fakeidp-metadata.xml

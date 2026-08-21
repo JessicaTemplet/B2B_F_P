@@ -1,0 +1,37 @@
+{
+  "policies": [
+    {
+      "id": "allow-prod-db-engineering-vpc-hours",
+      "effect": "Allow",
+      "resource": "Production_DB",
+      "reason": "Engineering may query the production database from the corporate VPC during business hours",
+      "condition": {
+        "all": [
+          { "attr": "user.Department", "op": "eq", "value": "Engineering" },
+          { "attr": "request.Source_IP", "op": "matches", "value": "Vpc_Range" },
+          { "attr": "time.Now", "op": "is", "value": "Business_Hours" }
+        ]
+      }
+    },
+    {
+      "id": "allow-reports-all-employees",
+      "effect": "Allow",
+      "resource": "Reports",
+      "reason": "Any authenticated employee may view reports from the corporate VPC",
+      "condition": {
+        "attr": "request.Source_IP",
+        "op": "matches",
+        "value": "Vpc_Range"
+      }
+    },
+    {
+      "id": "deny-inactive-department",
+      "effect": "Deny",
+      "resource": "*",
+      "reason": "Explicit deny for anyone missing a Department attribute (e.g. an account SCIM has not fully provisioned yet)",
+      "condition": {
+        "not": { "attr": "user.Department", "op": "pr" }
+      }
+    }
+  ]
+}
