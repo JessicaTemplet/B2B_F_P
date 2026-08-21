@@ -3,6 +3,7 @@ package oidc
 import (
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"b2bfp/internal/config"
@@ -159,9 +160,12 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// See internal/saml.Server's identical cookie-setting comment: Secure
+	// tracks public_base_url's scheme rather than being hardcoded true, so
+	// local http:// dev setups don't silently lose every session.
 	http.SetCookie(w, &http.Cookie{
 		Name: SessionCookieName, Value: sess.ID, Path: "/", HttpOnly: true,
-		Secure: true, SameSite: http.SameSiteLaxMode, Expires: sess.ExpiresAt,
+		Secure: strings.HasPrefix(s.base(tenantID), "https://"), SameSite: http.SameSiteLaxMode, Expires: sess.ExpiresAt,
 	})
 
 	if s.AfterLogin != nil {

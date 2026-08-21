@@ -3,7 +3,6 @@ package saml
 import (
 	"crypto"
 	"crypto/rsa"
-	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -19,14 +18,20 @@ const (
 	sampNS = "urn:oasis:names:tc:SAML:2.0:protocol"
 )
 
+// SHA-1-based DigestMethod/SignatureMethod algorithms are deliberately not
+// in these maps. SHA-1 is deprecated industry-wide for digital signatures
+// (practical chosen-prefix collisions), and this gateway has no legacy IdP
+// that requires it — accepting it by default would mean the algorithm
+// strength actually enforced is whatever the IdP's connection metadata
+// happens to negotiate, not a gateway-enforced minimum. If a real
+// deployment needs SHA-1 for an old IdP, add it back deliberately here
+// rather than defaulting to it.
 var digestAlgByURI = map[string]crypto.Hash{
-	"http://www.w3.org/2000/09/xmldsig#sha1":        crypto.SHA1,
 	"http://www.w3.org/2001/04/xmlenc#sha256":       crypto.SHA256,
 	"http://www.w3.org/2001/04/xmldsig-more#sha256": crypto.SHA256,
 }
 
 var sigAlgByURI = map[string]crypto.Hash{
-	"http://www.w3.org/2000/09/xmldsig#rsa-sha1":        crypto.SHA1,
 	"http://www.w3.org/2001/04/xmldsig-more#rsa-sha256": crypto.SHA256,
 }
 
@@ -37,10 +42,12 @@ var sigAlgByURI = map[string]crypto.Hash{
 // document for "an Assertion element" — that reopens the signature-wrapping
 // hole this package is designed to close.
 type VerifiedAssertion struct {
-	doc   *xmldoc
-	raw   map[int][]byte
-	Start int
-	End   int
+	doc           *xmldoc
+	raw           map[int][]byte
+	Start         int
+	End           int
+	responseStart int
+	responseEnd   int
 }
 
 // VerifySAMLResponseSignature parses rawXML as a SAMLResponse and verifies
@@ -100,7 +107,7 @@ func VerifySAMLResponseSignature(rawXML []byte, cert *x509.Certificate) (*Verifi
 			return nil, fmt.Errorf("saml: Assertion signature invalid: %w", err)
 		}
 	}
-	return &VerifiedAssertion{doc: doc, raw: raw, Start: aStart, End: aEnd}, nil
+	return &VerifiedAssertion{doc: doc, raw: raw, Start: aStart, End: aEnd, responseStart: rootStart, responseEnd: rootEnd}, nil
 }
 
 func rootRange(d *xmldoc) (int, int, bool) {
@@ -180,7 +187,10 @@ func verifyEnvelopedSignature(doc *xmldoc, raw map[int][]byte, parentStart, pare
 
 	// Enveloped-signature transform: canonicalize the parent element with
 	// the Signature subtree itself excluded.
-	canonicalTarget := canonicalize(doc, raw, parentStart, parentEnd, map[int]bool{sigStart: true})
+	canonicalTarget, err := canonicalize(doc, raw, parentStart, parentEnd, map[int]bool{sigStart: true})
+	if err != nil {
+		return err
+	}
 	gotDigest := hashBytes(digestHash, canonicalTarget)
 	if !hmacEqual(gotDigest, wantDigest) {
 		return errors.New("digest mismatch: signed content does not match Reference DigestValue")
@@ -206,7 +216,10 @@ func verifyEnvelopedSignature(doc *xmldoc, raw map[int][]byte, parentStart, pare
 		return fmt.Errorf("invalid SignatureValue base64: %w", err)
 	}
 
-	canonicalSignedInfo := canonicalize(doc, raw, siStart, siEnd, nil)
+	canonicalSignedInfo, err := canonicalize(doc, raw, siStart, siEnd, nil)
+	if err != nil {
+		return err
+	}
 	digest := hashBytes(sigHash, canonicalSignedInfo)
 
 	pub, ok := cert.PublicKey.(*rsa.PublicKey)
@@ -221,9 +234,6 @@ func verifyEnvelopedSignature(doc *xmldoc, raw map[int][]byte, parentStart, pare
 
 func hashBytes(alg crypto.Hash, data []byte) []byte {
 	switch alg {
-	case crypto.SHA1:
-		h := sha1.Sum(data)
-		return h[:]
 	case crypto.SHA256:
 		h := sha256.Sum256(data)
 		return h[:]

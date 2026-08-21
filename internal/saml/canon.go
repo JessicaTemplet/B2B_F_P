@@ -136,22 +136,40 @@ type canonicalizer struct {
 	raw     map[int][]byte
 	exclude map[int]bool // token indices (StartElement) whose whole subtree is omitted (the enveloped ds:Signature)
 	out     bytes.Buffer
+	tooDeep bool
 }
+
+// maxCanonDepth bounds element-nesting recursion in render(). This runs on
+// attacker-controlled XML (a POSTed SAMLResponse, verified or not — the
+// digest must be computed before we know the signature is valid) via direct
+// Go function recursion, so with no limit a pathologically deep document
+// (well within ordinary body-size limits) can exhaust the goroutine stack.
+// That is a runtime fatal error in Go, not an ordinary panic — it is NOT
+// caught by net/http's per-request recover() and takes down the whole
+// process. Real SAML assertions never come close to this depth.
+const maxCanonDepth = 256
 
 // canonicalize renders the exclusive-c14n serialization of doc[start:end]
 // (inclusive of the StartElement at start and EndElement at end).
-func canonicalize(doc *xmldoc, raw map[int][]byte, start, end int, exclude map[int]bool) []byte {
+func canonicalize(doc *xmldoc, raw map[int][]byte, start, end int, exclude map[int]bool) ([]byte, error) {
 	c := &canonicalizer{doc: doc, raw: raw, exclude: exclude}
-	c.render(start, end, nsScope{})
-	return c.out.Bytes()
+	c.render(start, end, nsScope{}, 0)
+	if c.tooDeep {
+		return nil, fmt.Errorf("saml: XML element nesting exceeds %d levels, refusing to canonicalize", maxCanonDepth)
+	}
+	return c.out.Bytes(), nil
 }
 
 // render walks [start,end], writing canonical bytes. rendered tracks which
 // namespace prefix->URI bindings have already been emitted by an ancestor
 // *within this canonicalization pass* (not the original document), which is
 // the crux of exclusive c14n's "visibly utilized" rule.
-func (c *canonicalizer) render(start, end int, rendered nsScope) {
+func (c *canonicalizer) render(start, end int, rendered nsScope, depth int) {
 	if c.exclude[start] {
+		return
+	}
+	if depth > maxCanonDepth {
+		c.tooDeep = true
 		return
 	}
 	se := c.doc.tokens[start].(xml.StartElement)
@@ -263,7 +281,7 @@ func (c *canonicalizer) render(start, end int, rendered nsScope) {
 		case xml.StartElement:
 			childEnd := c.doc.matchEnd[i]
 			if !c.exclude[i] {
-				c.render(i, childEnd, newRendered)
+				c.render(i, childEnd, newRendered, depth+1)
 			}
 			i = childEnd + 1
 			continue

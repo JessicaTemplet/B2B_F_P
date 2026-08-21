@@ -167,19 +167,64 @@ cases.
 
 ## Security notes (read before production use)
 
-- **The hand-rolled XML-DSig verifier is the highest-risk piece of this
-  codebase.** It implements a deliberately narrow, tested subset of
-  Exclusive XML Canonicalization — enough for the straightforward,
-  single-assertion documents Okta/Entra/Ping actually emit — not the full
-  spec (no `InclusiveNamespaces PrefixList`, no comment-preserving c14n). It
-  defends against XML Signature Wrapping by construction (single-Assertion
-  documents only, Reference URI must match the signed element's own ID,
-  trust anchored in the tenant's pre-registered IdP certificate rather than
-  any cert embedded in the response — see `internal/saml/xmldsig.go`), and
-  that defense is unit-tested (`TestVerify_RejectsSignatureWrappingViaExtraAssertion`).
-  Get an independent security review and interop-test against your actual
-  IdPs before trusting this in production; XML-DSig has a long history of
-  subtle real-world bugs.
+This codebase went through one internal review pass (see `git log`); every
+finding from that pass was fixed and is now covered by a regression test.
+That is not a substitute for an independent, external security review —
+especially of `internal/saml` — before handling real production SSO
+traffic.
+
+**Fixed in the review pass**, each with a test proving it:
+- The reverse proxy now strips the entire `X-B2BFP-*` header namespace from
+  the client's original request before setting the gateway's own values
+  (`internal/authz/middleware.go`) — previously it only overwrote the
+  specific headers it knew about, so a client could smuggle e.g.
+  `X-B2BFP-Groups` straight through to the backend
+  (`TestEnforce_StripsClientSuppliedIdentityHeaders`).
+- XML canonicalization and the SCIM filter parser both now enforce a
+  recursion-depth limit (`internal/saml/canon.go`'s `maxCanonDepth`,
+  `internal/scim/filter.go`'s `maxFilterDepth`). Both process
+  attacker-reachable input via direct Go function recursion — the ACS
+  endpoint canonicalizes a POSTed SAMLResponse *before* its signature is
+  known to be valid — and Go's stack-overflow fatal error is not something
+  `recover()` can catch, so unbounded depth was a full-process-crash DoS
+  (`TestVerify_RejectsDeeplyNestedXMLWithoutStackOverflow`,
+  `TestParseFilter_RejectsDeepNesting`).
+- SAML response validation now requires (rather than optionally checks)
+  `SubjectConfirmationData/@Recipient` and `Response/@Destination` to match
+  this tenant's actual ACS URL, and requires `<Conditions>` with a matching
+  `<AudienceRestriction>` to be present — an assertion that omitted them
+  used to be accepted as unscoped/unbounded rather than rejected
+  (`internal/saml/response.go`, `TestVerify_RejectsWrongRecipient` /
+  `_RejectsWrongDestination` / `_RejectsMissingConditions` /
+  `_RejectsMissingAudienceRestriction`).
+- IdP-initiated SAML responses (no `InResponseTo`, so the SP-initiated
+  flow's request-consumption replay defense never sees them) are now
+  tracked by assertion ID in `used_saml_assertions` and rejected on reuse
+  (`internal/store/sessions.go`'s `MarkAssertionUsed`,
+  `TestMarkAssertionUsed_RejectsReplay`).
+- SCIM request bodies are now capped at 5 MiB via `http.MaxBytesReader`
+  (`internal/scim/server.go`) — previously `json.Decoder` read an
+  unbounded body into memory.
+- XML-DSig verification no longer accepts SHA-1 `DigestMethod`/
+  `SignatureMethod` algorithms by default (`internal/saml/xmldsig.go`); add
+  them back deliberately if a legacy IdP genuinely requires SHA-1.
+- The session cookie's `Secure` flag now tracks `public_base_url`'s scheme
+  instead of being hardcoded `true`, which used to silently break session
+  persistence in real browsers (not `curl`, which ignores `Secure`)
+  whenever `public_base_url` was `http://`, as the shipped demo config is.
+
+**Still true, by design:**
+- The hand-rolled XML-DSig verifier remains the highest-risk piece of this
+  codebase. It implements a deliberately narrow subset of Exclusive XML
+  Canonicalization — enough for the straightforward, single-assertion
+  documents Okta/Entra/Ping actually emit — not the full spec (no
+  `InclusiveNamespaces PrefixList`, no comment-preserving c14n). Its
+  anti-XSW defenses (single-Assertion documents only, Reference URI must
+  match the signed element's own ID, trust anchored in the tenant's
+  pre-registered IdP certificate rather than any cert embedded in the
+  response) are unit-tested, but XML-DSig has a long history of subtle
+  real-world bugs — get an independent review and interop-test against
+  your actual IdPs before trusting this in production.
 - `internal/authz` only trusts `X-Forwarded-For` when `trust_forwarded_for`
   is explicitly enabled in config — enable it only when the gateway sits
   behind a proxy that itself sets/overwrites that header, never when clients

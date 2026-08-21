@@ -98,6 +98,18 @@ func (m *Middleware) Enforce(next http.Handler) http.Handler {
 			return
 		}
 
+		// Strip the entire reserved identity-header namespace from the
+		// client's original request before setting our own values. Only
+		// overwriting the specific keys we know about would let a client
+		// smuggle any OTHER X-B2BFP-* header straight through to the
+		// backend unmodified (e.g. a self-supplied X-B2BFP-Groups), which
+		// defeats the "only the gateway can set these" trust model the
+		// backend is meant to rely on.
+		for k := range r.Header {
+			if strings.HasPrefix(strings.ToLower(k), "x-b2bfp-") {
+				r.Header.Del(k)
+			}
+		}
 		r.Header.Set("X-B2BFP-Tenant-Id", sess.TenantID)
 		r.Header.Set("X-B2BFP-User-Id", sess.UserID)
 		r.Header.Set("X-B2BFP-Subject", sess.Subject)

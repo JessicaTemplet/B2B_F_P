@@ -61,9 +61,17 @@ func (s *Server) authenticate(next func(w http.ResponseWriter, r *http.Request, 
 			writeError(w, http.StatusUnauthorized, "invalidCredentials", "invalid bearer token")
 			return
 		}
+		// A single SCIM User/Group resource is at most a few KB; cap well
+		// above that so a legitimate large group roster still fits, but
+		// reject anything designed to exhaust memory. decodeBody's
+		// json.Decoder otherwise reads the body fully into memory with no
+		// limit of its own.
+		r.Body = http.MaxBytesReader(w, r.Body, maxSCIMBodyBytes)
 		next(w, r, tenantID)
 	}
 }
+
+const maxSCIMBodyBytes = 5 << 20 // 5 MiB
 
 func secureEqual(a, b string) bool {
 	if len(a) != len(b) {

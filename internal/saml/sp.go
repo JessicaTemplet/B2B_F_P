@@ -184,7 +184,7 @@ func (s *Server) acs(w http.ResponseWriter, r *http.Request) {
 	var lastErr error
 	var assertion *Assertion
 	for _, cert := range idp.SigningCertificates {
-		a, err := ParseAndVerifyResponse(rawXML, cert, sp.EntityID, "", time.Now(), 2*time.Minute)
+		a, err := ParseAndVerifyResponse(rawXML, cert, sp.EntityID, sp.ACSURL, "", time.Now(), 2*time.Minute)
 		if err == nil {
 			assertion = a
 			break
@@ -196,6 +196,31 @@ func (s *Server) acs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "SAML response verification failed", http.StatusForbidden)
 		return
 	}
+
+	// Single-use enforcement for every accepted assertion, SP-initiated or
+	// IdP-initiated. SP-initiated responses are additionally covered by
+	// TakeSAMLRequest's InResponseTo consumption below; IdP-initiated ones
+	// (no InResponseTo at all) have no other replay defense, so this check
+	// must not be skipped just because InResponseTo is empty.
+	if assertion.AssertionID == "" {
+		http.Error(w, "SAML assertion missing ID", http.StatusForbidden)
+		return
+	}
+	expiresAt := assertion.NotOnOrAfter
+	if expiresAt.IsZero() {
+		expiresAt = time.Now().Add(24 * time.Hour)
+	}
+	usedBefore, err := s.Store.MarkAssertionUsed(tenantID, assertion.AssertionID, expiresAt)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if usedBefore {
+		log.Printf("saml acs: tenant=%s rejected replayed assertion id=%s", tenantID, assertion.AssertionID)
+		http.Error(w, "this SAML assertion has already been used", http.StatusForbidden)
+		return
+	}
+
 	relayState, replayOK, err := s.Store.TakeSAMLRequest(assertion.InResponseTo, tenantID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -223,9 +248,14 @@ func (s *Server) acs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Secure tracks the configured public_base_url's scheme rather than
+	// being hardcoded true: a hardcoded Secure cookie set while
+	// public_base_url is http:// (e.g. local dev) is accepted by the
+	// browser but then never sent back on the following http:// request,
+	// silently breaking every session with no visible error.
 	http.SetCookie(w, &http.Cookie{
 		Name: SessionCookieName, Value: sess.ID, Path: "/", HttpOnly: true,
-		Secure: true, SameSite: http.SameSiteLaxMode, Expires: sess.ExpiresAt,
+		Secure: strings.HasPrefix(s.base(tenantID), "https://"), SameSite: http.SameSiteLaxMode, Expires: sess.ExpiresAt,
 	})
 
 	if s.AfterLogin != nil {

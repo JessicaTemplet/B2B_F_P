@@ -77,6 +77,27 @@ func (s *Store) DeleteSession(id string) error {
 	return err
 }
 
+// MarkAssertionUsed records assertionID as consumed for tenantID, returning
+// used=true if it was already recorded (i.e. this is a replay) rather than
+// erroring, so callers can turn that into a clean rejection. This is the
+// only replay defense for IdP-initiated SAML responses, which carry no
+// InResponseTo for saml_requests' consume-once mechanism to key off.
+func (s *Store) MarkAssertionUsed(tenantID, assertionID string, expiresAt time.Time) (used bool, err error) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := s.DB.Exec(`DELETE FROM used_saml_assertions WHERE expires_at < ?`, now); err != nil {
+		return false, err
+	}
+	_, err = s.DB.Exec(`INSERT INTO used_saml_assertions (assertion_id, tenant_id, expires_at) VALUES (?, ?, ?)`,
+		assertionID, tenantID, expiresAt.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		if isUniqueConstraint(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	return false, nil
+}
+
 // --- SAML AuthnRequest tracking (replay / InResponseTo defense) ---
 
 func (s *Store) PutSAMLRequest(requestID, tenantID, relayState string, ttl time.Duration) error {

@@ -73,8 +73,10 @@ func buildAssertionBody() string {
 		`</saml:AttributeStatement>`
 }
 
+const testACSURL = "https://gateway.example.com/saml/acme/acs"
+
 func wrapResponse(assertionXML string) string {
-	return `<samlp:Response xmlns:samlp="` + sampNS + `" xmlns:saml="` + samlNS + `" ID="_resp789" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">` +
+	return `<samlp:Response xmlns:samlp="` + sampNS + `" xmlns:saml="` + samlNS + `" ID="_resp789" Version="2.0" IssueInstant="2024-01-01T00:00:00Z" Destination="` + testACSURL + `">` +
 		`<saml:Issuer>https://idp.example.com/entity</saml:Issuer>` +
 		assertionXML +
 		`</samlp:Response>`
@@ -87,7 +89,7 @@ func TestSignAndVerify_AssertionLevelSignature(t *testing.T) {
 	fullResponse := wrapResponse(signedAssertion)
 
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	a, err := ParseAndVerifyResponse([]byte(fullResponse), cert, "https://gateway.example.com/saml/acme/metadata", "_req123", now, 2*time.Minute)
+	a, err := ParseAndVerifyResponse([]byte(fullResponse), cert, "https://gateway.example.com/saml/acme/metadata", testACSURL, "_req123", now, 2*time.Minute)
 	if err != nil {
 		t.Fatalf("expected valid signature, got error: %v", err)
 	}
@@ -113,7 +115,7 @@ func TestVerify_RejectsTamperedAttribute(t *testing.T) {
 	fullResponse := wrapResponse(tamperedStr)
 
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	_, err := ParseAndVerifyResponse([]byte(fullResponse), cert, "https://gateway.example.com/saml/acme/metadata", "_req123", now, 2*time.Minute)
+	_, err := ParseAndVerifyResponse([]byte(fullResponse), cert, "https://gateway.example.com/saml/acme/metadata", testACSURL, "_req123", now, 2*time.Minute)
 	if err == nil {
 		t.Fatal("expected signature verification to fail on tampered content, got nil error")
 	}
@@ -127,7 +129,7 @@ func TestVerify_RejectsWrongSigningCert(t *testing.T) {
 	fullResponse := wrapResponse(signedAssertion)
 
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	_, err := ParseAndVerifyResponse([]byte(fullResponse), wrongCert, "https://gateway.example.com/saml/acme/metadata", "_req123", now, 2*time.Minute)
+	_, err := ParseAndVerifyResponse([]byte(fullResponse), wrongCert, "https://gateway.example.com/saml/acme/metadata", testACSURL, "_req123", now, 2*time.Minute)
 	if err == nil {
 		t.Fatal("expected verification against the wrong cert to fail")
 	}
@@ -151,7 +153,7 @@ func TestVerify_RejectsSignatureWrappingViaExtraAssertion(t *testing.T) {
 		`</samlp:Response>`
 
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	_, err := ParseAndVerifyResponse([]byte(fullResponse), cert, "https://gateway.example.com/saml/acme/metadata", "_req123", now, 2*time.Minute)
+	_, err := ParseAndVerifyResponse([]byte(fullResponse), cert, "https://gateway.example.com/saml/acme/metadata", testACSURL, "_req123", now, 2*time.Minute)
 	if err == nil {
 		t.Fatal("expected multi-assertion response (XSW attempt) to be rejected")
 	}
@@ -164,7 +166,7 @@ func TestVerify_RejectsExpiredAssertion(t *testing.T) {
 	fullResponse := wrapResponse(signedAssertion)
 
 	longAfterExpiry := time.Date(2200, 1, 1, 0, 0, 0, 0, time.UTC)
-	_, err := ParseAndVerifyResponse([]byte(fullResponse), cert, "https://gateway.example.com/saml/acme/metadata", "_req123", longAfterExpiry, 2*time.Minute)
+	_, err := ParseAndVerifyResponse([]byte(fullResponse), cert, "https://gateway.example.com/saml/acme/metadata", testACSURL, "_req123", longAfterExpiry, 2*time.Minute)
 	if err == nil {
 		t.Fatal("expected expired assertion to be rejected")
 	}
@@ -177,9 +179,125 @@ func TestVerify_RejectsWrongInResponseTo(t *testing.T) {
 	fullResponse := wrapResponse(signedAssertion)
 
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	_, err := ParseAndVerifyResponse([]byte(fullResponse), cert, "https://gateway.example.com/saml/acme/metadata", "_some_other_request_id", now, 2*time.Minute)
+	_, err := ParseAndVerifyResponse([]byte(fullResponse), cert, "https://gateway.example.com/saml/acme/metadata", testACSURL, "_some_other_request_id", now, 2*time.Minute)
 	if err == nil {
 		t.Fatal("expected mismatched InResponseTo to be rejected (replay/CSRF defense)")
+	}
+}
+
+func TestVerify_RejectsWrongRecipient(t *testing.T) {
+	priv, certDER, cert := testCA(t)
+	assertionOpen := `<saml:Assertion xmlns:saml="` + samlNS + `" ID="_assert456" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">`
+	body := `<saml:Issuer>https://idp.example.com/entity</saml:Issuer>` +
+		`<saml:Subject>` +
+		`<saml:NameID>alice@acme-corp.example</saml:NameID>` +
+		`<saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">` +
+		`<saml:SubjectConfirmationData InResponseTo="_req123" NotOnOrAfter="2099-01-01T00:00:00Z" Recipient="https://attacker.example/acs"></saml:SubjectConfirmationData>` +
+		`</saml:SubjectConfirmation>` +
+		`</saml:Subject>` +
+		`<saml:Conditions NotBefore="2020-01-01T00:00:00Z" NotOnOrAfter="2099-01-01T00:00:00Z">` +
+		`<saml:AudienceRestriction><saml:Audience>https://gateway.example.com/saml/acme/metadata</saml:Audience></saml:AudienceRestriction>` +
+		`</saml:Conditions>`
+	signedAssertion := signEnvelopedForTest(t, priv, certDER, "_assert456", assertionOpen, body)
+	fullResponse := wrapResponse(signedAssertion)
+
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	_, err := ParseAndVerifyResponse([]byte(fullResponse), cert, "https://gateway.example.com/saml/acme/metadata", testACSURL, "_req123", now, 2*time.Minute)
+	if err == nil {
+		t.Fatal("expected SubjectConfirmationData Recipient mismatch to be rejected")
+	}
+}
+
+func TestVerify_RejectsWrongDestination(t *testing.T) {
+	priv, certDER, cert := testCA(t)
+	assertionOpen := `<saml:Assertion xmlns:saml="` + samlNS + `" ID="_assert456" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">`
+	signedAssertion := signEnvelopedForTest(t, priv, certDER, "_assert456", assertionOpen, buildAssertionBody())
+	// A different Destination on the (unsigned-at-this-layer, but here
+	// Response-level Destination isn't inside the signed Assertion, so
+	// tampering it doesn't break the signature) Response element.
+	fullResponse := `<samlp:Response xmlns:samlp="` + sampNS + `" xmlns:saml="` + samlNS + `" ID="_resp789" Version="2.0" IssueInstant="2024-01-01T00:00:00Z" Destination="https://attacker.example/acs">` +
+		`<saml:Issuer>https://idp.example.com/entity</saml:Issuer>` +
+		signedAssertion +
+		`</samlp:Response>`
+
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	_, err := ParseAndVerifyResponse([]byte(fullResponse), cert, "https://gateway.example.com/saml/acme/metadata", testACSURL, "_req123", now, 2*time.Minute)
+	if err == nil {
+		t.Fatal("expected Response Destination mismatch to be rejected")
+	}
+}
+
+func TestVerify_RejectsMissingConditions(t *testing.T) {
+	priv, certDER, cert := testCA(t)
+	assertionOpen := `<saml:Assertion xmlns:saml="` + samlNS + `" ID="_assert456" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">`
+	body := `<saml:Issuer>https://idp.example.com/entity</saml:Issuer>` +
+		`<saml:Subject>` +
+		`<saml:NameID>alice@acme-corp.example</saml:NameID>` +
+		`<saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">` +
+		`<saml:SubjectConfirmationData InResponseTo="_req123" NotOnOrAfter="2099-01-01T00:00:00Z" Recipient="` + testACSURL + `"></saml:SubjectConfirmationData>` +
+		`</saml:SubjectConfirmation>` +
+		`</saml:Subject>`
+	// No <Conditions> at all — this used to be silently accepted as
+	// "nothing to check"; it must now be rejected.
+	signedAssertion := signEnvelopedForTest(t, priv, certDER, "_assert456", assertionOpen, body)
+	fullResponse := wrapResponse(signedAssertion)
+
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	_, err := ParseAndVerifyResponse([]byte(fullResponse), cert, "https://gateway.example.com/saml/acme/metadata", testACSURL, "_req123", now, 2*time.Minute)
+	if err == nil {
+		t.Fatal("expected assertion with no Conditions element to be rejected")
+	}
+}
+
+func TestVerify_RejectsMissingAudienceRestriction(t *testing.T) {
+	priv, certDER, cert := testCA(t)
+	assertionOpen := `<saml:Assertion xmlns:saml="` + samlNS + `" ID="_assert456" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">`
+	body := `<saml:Issuer>https://idp.example.com/entity</saml:Issuer>` +
+		`<saml:Subject>` +
+		`<saml:NameID>alice@acme-corp.example</saml:NameID>` +
+		`<saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">` +
+		`<saml:SubjectConfirmationData InResponseTo="_req123" NotOnOrAfter="2099-01-01T00:00:00Z" Recipient="` + testACSURL + `"></saml:SubjectConfirmationData>` +
+		`</saml:SubjectConfirmation>` +
+		`</saml:Subject>` +
+		// Conditions present, but with no AudienceRestriction child.
+		`<saml:Conditions NotBefore="2020-01-01T00:00:00Z" NotOnOrAfter="2099-01-01T00:00:00Z"></saml:Conditions>`
+	signedAssertion := signEnvelopedForTest(t, priv, certDER, "_assert456", assertionOpen, body)
+	fullResponse := wrapResponse(signedAssertion)
+
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	_, err := ParseAndVerifyResponse([]byte(fullResponse), cert, "https://gateway.example.com/saml/acme/metadata", testACSURL, "_req123", now, 2*time.Minute)
+	if err == nil {
+		t.Fatal("expected assertion with Conditions but no AudienceRestriction to be rejected")
+	}
+}
+
+func TestVerify_RejectsDeeplyNestedXMLWithoutStackOverflow(t *testing.T) {
+	_, _, cert := testCA(t)
+	// An attacker doesn't need a validly-signed document to reach the
+	// canonicalizer: verifyEnvelopedSignature must canonicalize the
+	// referenced element to compute its digest BEFORE it can tell the
+	// signature is bogus, so a garbage Signature/DigestValue is enough to
+	// reach the vulnerable recursive render() path. Nest far past
+	// maxCanonDepth inside the signed Assertion body.
+	const depth = maxCanonDepth * 4
+	var open, closeTags string
+	for i := 0; i < depth; i++ {
+		open += "<a>"
+		closeTags = "</a>" + closeTags
+	}
+	assertion := `<saml:Assertion xmlns:saml="` + samlNS + `" ID="_assert456" Version="2.0" IssueInstant="2024-01-01T00:00:00Z">` +
+		`<ds:Signature xmlns:ds="` + dsNS + `"><ds:SignedInfo><ds:Reference URI="#_assert456">` +
+		`<ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"></ds:DigestMethod>` +
+		`<ds:DigestValue>AAAA</ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue>AAAA</ds:SignatureValue></ds:Signature>` +
+		`<saml:Issuer>https://idp.example.com/entity</saml:Issuer>` +
+		open + closeTags +
+		`</saml:Assertion>`
+	fullResponse := wrapResponse(assertion)
+
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	_, err := ParseAndVerifyResponse([]byte(fullResponse), cert, "https://gateway.example.com/saml/acme/metadata", testACSURL, "_req123", now, 2*time.Minute)
+	if err == nil {
+		t.Fatal("expected pathologically deep XML nesting to be rejected")
 	}
 }
 

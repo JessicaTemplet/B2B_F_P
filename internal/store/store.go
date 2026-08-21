@@ -80,6 +80,18 @@ CREATE TABLE IF NOT EXISTS oidc_requests (
 	created_at  TEXT NOT NULL,
 	expires_at  TEXT NOT NULL
 );
+
+-- Tracks every SAML Assertion ID this gateway has accepted, so a captured
+-- valid response (SP- or IdP-initiated) cannot be replayed a second time
+-- within its own validity window. SP-initiated responses are additionally
+-- protected by saml_requests' single-use InResponseTo consumption; this
+-- table is what protects IdP-initiated ones, which have no InResponseTo.
+CREATE TABLE IF NOT EXISTS used_saml_assertions (
+	assertion_id TEXT NOT NULL,
+	tenant_id    TEXT NOT NULL,
+	expires_at   TEXT NOT NULL,
+	PRIMARY KEY (tenant_id, assertion_id)
+);
 `
 
 func Open(path string) (*Store, error) {

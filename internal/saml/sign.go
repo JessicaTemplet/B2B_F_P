@@ -31,7 +31,10 @@ func BuildSignedElementXML(priv *rsa.PrivateKey, certDER []byte, id, openTag, bo
 	if !ok {
 		return "", fmt.Errorf("sign: no root element")
 	}
-	canonicalTarget := canonicalize(unsignedDoc, raw, start, end, nil)
+	canonicalTarget, err := canonicalize(unsignedDoc, raw, start, end, nil)
+	if err != nil {
+		return "", fmt.Errorf("sign: %w", err)
+	}
 	digest := sha256.Sum256(canonicalTarget)
 	digestB64 := base64.StdEncoding.EncodeToString(digest[:])
 
@@ -48,7 +51,10 @@ func BuildSignedElementXML(priv *rsa.PrivateKey, certDER []byte, id, openTag, bo
 		return "", fmt.Errorf("sign: capture SignedInfo raw tags: %w", err)
 	}
 	siStart, siEnd, _ := rootRange(siDoc)
-	canonicalSignedInfo := canonicalize(siDoc, siRaw, siStart, siEnd, nil)
+	canonicalSignedInfo, err := canonicalize(siDoc, siRaw, siStart, siEnd, nil)
+	if err != nil {
+		return "", fmt.Errorf("sign: %w", err)
+	}
 	siDigest := sha256.Sum256(canonicalSignedInfo)
 	sigBytes, err := rsa.SignPKCS1v15(rand.Reader, priv, crypto.SHA256, siDigest[:])
 	if err != nil {

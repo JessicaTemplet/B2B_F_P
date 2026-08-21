@@ -314,9 +314,18 @@ func classifyWord(word string) token {
 // ---- recursive-descent parser -----------------------------------------
 
 type parser struct {
-	toks []token
-	pos  int
+	toks  []token
+	pos   int
+	depth int
 }
+
+// maxFilterDepth bounds how deeply parseTerm may recurse via nested parens
+// ("(((...)))" or "not(not(not(..." in the filter query parameter. Without
+// a limit, a filter string well within any reasonable length cap can still
+// nest deeply enough to exhaust the goroutine stack — a Go runtime fatal
+// error that ordinary panic recovery cannot catch. Real SCIM filters never
+// come close to this.
+const maxFilterDepth = 128
 
 func ParseFilter(input string) (Node, error) {
 	if strings.TrimSpace(input) == "" {
@@ -388,7 +397,12 @@ func (p *parser) parseTerm() (Node, error) {
 			return nil, fmt.Errorf("expected '(' after 'not'")
 		}
 		p.next()
+		p.depth++
+		if p.depth > maxFilterDepth {
+			return nil, fmt.Errorf("filter nesting exceeds %d levels", maxFilterDepth)
+		}
 		inner, err := p.parseOr()
+		p.depth--
 		if err != nil {
 			return nil, err
 		}
@@ -399,7 +413,12 @@ func (p *parser) parseTerm() (Node, error) {
 		return &notNode{inner}, nil
 	case tokLParen:
 		p.next()
+		p.depth++
+		if p.depth > maxFilterDepth {
+			return nil, fmt.Errorf("filter nesting exceeds %d levels", maxFilterDepth)
+		}
 		inner, err := p.parseOr()
+		p.depth--
 		if err != nil {
 			return nil, err
 		}

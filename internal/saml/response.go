@@ -12,6 +12,7 @@ import (
 // assertion data. Every field is read from VerifiedAssertion's token range,
 // so nothing here can have come from outside the signed subtree.
 type Assertion struct {
+	AssertionID  string
 	NameID       string
 	NameIDFormat string
 	Issuer       string
@@ -33,11 +34,18 @@ func parseSAMLTime(s string) (time.Time, error) {
 
 // ParseAndVerifyResponse verifies rawXML's signature against cert, then
 // extracts and validates the assertion: signature check (verifyEnvelopedSignature
-// via VerifySAMLResponseSignature), Conditions time window, audience
-// restriction (must include spEntityID), and — when expectedRequestID is
-// non-empty — that InResponseTo matches the AuthnRequest we actually sent
-// (replay/CSRF defense for the SP-initiated flow).
-func ParseAndVerifyResponse(rawXML []byte, cert *x509.Certificate, spEntityID, expectedRequestID string, now time.Time, clockSkew time.Duration) (*Assertion, error) {
+// via VerifySAMLResponseSignature), Response/@Destination and
+// SubjectConfirmationData/@Recipient (both must match acsURL), a *required*
+// Conditions/AudienceRestriction naming spEntityID (documents that omit
+// either are rejected, not silently accepted), the NotBefore/NotOnOrAfter
+// time window, and — when expectedRequestID is non-empty — that
+// InResponseTo matches the AuthnRequest we actually sent (replay/CSRF
+// defense for the SP-initiated flow). Single-use replay defense for the
+// assertion itself (including IdP-initiated responses, which carry no
+// InResponseTo) is the caller's responsibility via store.MarkAssertionUsed
+// on the returned Assertion.AssertionID — this function only validates the
+// document, it has no persistent state to consult.
+func ParseAndVerifyResponse(rawXML []byte, cert *x509.Certificate, spEntityID, acsURL, expectedRequestID string, now time.Time, clockSkew time.Duration) (*Assertion, error) {
 	verified, err := VerifySAMLResponseSignature(rawXML, cert)
 	if err != nil {
 		return nil, err
@@ -46,7 +54,16 @@ func ParseAndVerifyResponse(rawXML []byte, cert *x509.Certificate, spEntityID, e
 	_ = raw
 	aStart, aEnd := verified.Start, verified.End
 
+	if rootSE, ok := doc.tokens[verified.responseStart].(xml.StartElement); ok {
+		if dest, ok := attrValue(rootSE, "Destination"); ok && dest != acsURL {
+			return nil, fmt.Errorf("saml: Response Destination %q does not match this SP's ACS URL %q", dest, acsURL)
+		}
+	}
+
 	a := &Assertion{Attributes: map[string][]string{}}
+	if aSE, ok := doc.tokens[aStart].(xml.StartElement); ok {
+		a.AssertionID, _ = attrValue(aSE, "ID")
+	}
 
 	if issStart, issEnd, ok := doc.findDirectChild(aStart, aEnd, samlNS, "Issuer"); ok {
 		a.Issuer = strings.TrimSpace(elementText(doc, issStart, issEnd))
@@ -66,55 +83,70 @@ func ParseAndVerifyResponse(rawXML []byte, cert *x509.Certificate, spEntityID, e
 		return nil, fmt.Errorf("saml: assertion missing NameID")
 	}
 
-	// SubjectConfirmationData: InResponseTo must match our own pending
-	// AuthnRequest, and NotOnOrAfter must not have elapsed — this is the
-	// primary anti-replay control for SP-initiated SSO.
-	if scdStart, scdEnd, ok := findSubjectConfirmationData(doc, subStart, subEnd); ok {
-		se := doc.tokens[scdStart].(xml.StartElement)
-		if irt, ok := attrValue(se, "InResponseTo"); ok {
-			a.InResponseTo = irt
-		}
-		if noa, ok := attrValue(se, "NotOnOrAfter"); ok {
-			t, err := parseSAMLTime(noa)
-			if err != nil {
-				return nil, fmt.Errorf("saml: invalid SubjectConfirmationData NotOnOrAfter: %w", err)
-			}
-			if now.After(t.Add(clockSkew)) {
-				return nil, fmt.Errorf("saml: subject confirmation expired at %s", t)
-			}
-		}
-		_ = scdEnd
+	// SubjectConfirmationData: Recipient must match this SP's ACS URL,
+	// InResponseTo must match our own pending AuthnRequest, and
+	// NotOnOrAfter must not have elapsed — these are the primary anti-replay
+	// and anti-relay controls for SP-initiated SSO.
+	scdStart, scdEnd, ok := findSubjectConfirmationData(doc, subStart, subEnd)
+	if !ok {
+		return nil, fmt.Errorf("saml: assertion missing SubjectConfirmationData")
 	}
+	se := doc.tokens[scdStart].(xml.StartElement)
+	if recipient, ok := attrValue(se, "Recipient"); ok && recipient != acsURL {
+		return nil, fmt.Errorf("saml: SubjectConfirmationData Recipient %q does not match this SP's ACS URL %q", recipient, acsURL)
+	}
+	if irt, ok := attrValue(se, "InResponseTo"); ok {
+		a.InResponseTo = irt
+	}
+	if noa, ok := attrValue(se, "NotOnOrAfter"); ok {
+		t, err := parseSAMLTime(noa)
+		if err != nil {
+			return nil, fmt.Errorf("saml: invalid SubjectConfirmationData NotOnOrAfter: %w", err)
+		}
+		if now.After(t.Add(clockSkew)) {
+			return nil, fmt.Errorf("saml: subject confirmation expired at %s", t)
+		}
+	}
+	_ = scdEnd
 	if expectedRequestID != "" && a.InResponseTo != expectedRequestID {
 		return nil, fmt.Errorf("saml: InResponseTo %q does not match the outstanding AuthnRequest", a.InResponseTo)
 	}
 
+	// Conditions/AudienceRestriction are required, not merely checked when
+	// present: an assertion that omits them is rejected rather than treated
+	// as unscoped/unbounded. This matters most in multi-tenant deployments
+	// where more than one tenant's SP may trust the same IdP certificate —
+	// without a required, verified audience, an assertion legitimately
+	// issued for one tenant could otherwise be accepted by another.
 	condStart, condEnd, ok := doc.findDirectChild(aStart, aEnd, samlNS, "Conditions")
-	if ok {
-		se := doc.tokens[condStart].(xml.StartElement)
-		if nb, ok := attrValue(se, "NotBefore"); ok {
-			t, err := parseSAMLTime(nb)
-			if err != nil {
-				return nil, fmt.Errorf("saml: invalid Conditions NotBefore: %w", err)
-			}
-			a.NotBefore = t
-			if now.Add(clockSkew).Before(t) {
-				return nil, fmt.Errorf("saml: assertion not yet valid (NotBefore %s)", t)
-			}
+	if !ok {
+		return nil, fmt.Errorf("saml: assertion missing Conditions")
+	}
+	condSE := doc.tokens[condStart].(xml.StartElement)
+	if nb, ok := attrValue(condSE, "NotBefore"); ok {
+		t, err := parseSAMLTime(nb)
+		if err != nil {
+			return nil, fmt.Errorf("saml: invalid Conditions NotBefore: %w", err)
 		}
-		if noa, ok := attrValue(se, "NotOnOrAfter"); ok {
-			t, err := parseSAMLTime(noa)
-			if err != nil {
-				return nil, fmt.Errorf("saml: invalid Conditions NotOnOrAfter: %w", err)
-			}
-			a.NotOnOrAfter = t
-			if now.After(t.Add(clockSkew)) {
-				return nil, fmt.Errorf("saml: assertion expired at %s", t)
-			}
+		a.NotBefore = t
+		if now.Add(clockSkew).Before(t) {
+			return nil, fmt.Errorf("saml: assertion not yet valid (NotBefore %s)", t)
 		}
-		if err := checkAudience(doc, condStart, condEnd, spEntityID); err != nil {
-			return nil, err
+	}
+	if noa, ok := attrValue(condSE, "NotOnOrAfter"); ok {
+		t, err := parseSAMLTime(noa)
+		if err != nil {
+			return nil, fmt.Errorf("saml: invalid Conditions NotOnOrAfter: %w", err)
 		}
+		a.NotOnOrAfter = t
+		if now.After(t.Add(clockSkew)) {
+			return nil, fmt.Errorf("saml: assertion expired at %s", t)
+		}
+	} else {
+		return nil, fmt.Errorf("saml: Conditions missing NotOnOrAfter")
+	}
+	if err := checkAudience(doc, condStart, condEnd, spEntityID); err != nil {
+		return nil, err
 	}
 
 	for _, asRange := range doc.findAllDescendants(aStart, aEnd, samlNS, "AttributeStatement") {
@@ -148,7 +180,7 @@ func findSubjectConfirmationData(doc *xmldoc, subStart, subEnd int) (int, int, b
 func checkAudience(doc *xmldoc, condStart, condEnd int, spEntityID string) error {
 	arStart, arEnd, ok := doc.findDirectChild(condStart, condEnd, samlNS, "AudienceRestriction")
 	if !ok {
-		return nil // no restriction present; nothing to check
+		return fmt.Errorf("saml: Conditions missing AudienceRestriction")
 	}
 	for _, audRange := range doc.findAllDescendants(arStart, arEnd, samlNS, "Audience") {
 		if strings.TrimSpace(elementText(doc, audRange[0], audRange[1])) == spEntityID {
