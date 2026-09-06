@@ -5,7 +5,7 @@
   "policy_file": "policies/policies.json",
   "environment_file": "policies/environment.json",
   "saml_key_dir": "data/saml-keys",
-  "trust_forwarded_for": false,
+  "trust_forwarded_for": true,
   "resource_routes": {
     "/api/production-db/": "Production_DB",
     "/api/reports/": "Reports"
