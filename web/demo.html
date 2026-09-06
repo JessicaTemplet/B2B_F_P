@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>B2B Enterprise Gateway — Live Demo</title>
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #131822; --border: #232a38; --text: #e6e9ef;
+    --muted: #8b96a8; --accent: #4f8cff; --good: #2fbf71; --bad: #ef4d5e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.5;
+  }
+  header { padding: 2.5rem 1.5rem 1.5rem; max-width: 860px; margin: 0 auto; }
+  header h1 { margin: 0 0 0.4rem; font-size: 1.6rem; }
+  header p { color: var(--muted); margin: 0; }
+  main { max-width: 860px; margin: 0 auto; padding: 0 1.5rem 4rem; display: grid; gap: 1.5rem; }
+  section {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 1.5rem;
+  }
+  section h2 { margin-top: 0; font-size: 1.15rem; }
+  section h2 .step { color: var(--accent); font-variant-numeric: tabular-nums; }
+  p.desc { color: var(--muted); font-size: 0.92rem; }
+  label { display: block; font-size: 0.85rem; color: var(--muted); margin: 0.6rem 0 0.25rem; }
+  input, select {
+    width: 100%; background: #0e131c; border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 0.5rem 0.6rem; font-size: 0.9rem;
+  }
+  button {
+    background: var(--accent); color: white; border: none; border-radius: 6px;
+    padding: 0.55rem 1rem; font-size: 0.9rem; cursor: pointer; font-weight: 600;
+  }
+  button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button + button { margin-left: 0.5rem; }
+  .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-top: 0.75rem; }
+  .toggle-group { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .toggle-group button { background: transparent; color: var(--muted); border-radius: 0; margin: 0; }
+  .toggle-group button.active { background: var(--accent); color: white; }
+  pre {
+    background: #0e131c; border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.9rem; overflow-x: auto; font-size: 0.8rem; margin: 0.75rem 0 0;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .badge {
+    display: inline-block; padding: 0.15rem 0.55rem; border-radius: 100px;
+    font-size: 0.75rem; font-weight: 700; letter-spacing: 0.02em;
+  }
+  .badge.ok { background: rgba(47,191,113,0.15); color: var(--good); }
+  .badge.err { background: rgba(239,77,94,0.15); color: var(--bad); }
+  .badge.neutral { background: rgba(139,150,168,0.15); color: var(--muted); }
+  details summary { cursor: pointer; color: var(--accent); font-size: 0.9rem; margin-top: 0.5rem; }
+  a { color: var(--accent); }
+  code { background: #0e131c; padding: 0.1rem 0.35rem; border-radius: 4px; font-size: 0.85em; }
+  footer { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 1rem 1.5rem 3rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>B2B Enterprise Federation &amp; Provisioning Gateway</h1>
+  <p>Live demo — SCIM directory sync, OIDC federated login, and an ABAC-enforced reverse proxy, all running for real against the <code>acme</code> demo tenant. No mocked responses: every action below hits the actual gateway.</p>
+</header>
+
+<main>
+
+  <section>
+    <h2><span class="step">1</span> · SCIM directory sync</h2>
+    <p class="desc">Simulates an identity provider (Okta, Entra ID, Ping) pushing a new employee into the gateway via SCIM 2.0 — the same protocol a real corporate IdP uses for automated provisioning/deprovisioning.</p>
+    <label for="scim-name">Full name</label>
+    <input id="scim-name" value="Dana Ortiz">
+    <label for="scim-email">Email</label>
+    <input id="scim-email" value="dana@acme-corp.example">
+    <label for="scim-dept">Department</label>
+    <input id="scim-dept" value="Engineering">
+    <div class="row">
+      <button onclick="scimCreate()">Provision user via SCIM</button>
+      <button class="secondary" onclick="scimList()">List provisioned users</button>
+    </div>
+    <pre id="scim-out" style="display:none"></pre>
+  </section>
+
+  <section>
+    <h2><span class="step">2</span> · OIDC login + ABAC-enforced proxy</h2>
+    <p class="desc">Signs you in through a mock corporate OpenID Provider (a stand-in for Okta/Entra/Auth0), then calls a backend resource through the gateway's reverse proxy. Every call is evaluated against a real ABAC policy before it's allowed through.</p>
+    <div id="oidc-status" class="row"><span class="badge neutral">checking session…</span></div>
+    <div class="row">
+      <a href="/oidc/acme/login?returnTo=/"><button id="oidc-login-btn">Sign in with mock OIDC</button></a>
+    </div>
+    <label style="margin-top:1rem">Simulated request origin (this gateway is IP-restricted — toggle to see the policy actually enforce it)</label>
+    <div class="toggle-group">
+      <button id="ip-vpc" class="active" onclick="setIP('vpc')">Corporate VPC (127.0.0.1)</button>
+      <button id="ip-public" onclick="setIP('public')">Public internet (8.8.8.8)</button>
+    </div>
+    <div class="row">
+      <button onclick="callReports()">Call /api/reports/dashboard</button>
+    </div>
+    <pre id="reports-out" style="display:none"></pre>
+  </section>
+
+  <section>
+    <h2><span class="step">3</span> · SAML 2.0 (SP-initiated SSO)</h2>
+    <p class="desc">The gateway also speaks SAML — a hand-rolled SP with real XML-DSig signature verification (including anti-signature-wrapping defenses). This flow needs a signed assertion minted by an IdP, which means real cryptographic signing — not something a static page can automate safely, so it's a guided curl walkthrough instead of a button.</p>
+    <details>
+      <summary>Show the SAML walkthrough</summary>
+      <pre>curl -D - -o /dev/null "https://b2bfp.syntagmata.com/saml/acme/login?returnTo=/api/reports/dashboard"
+# capture the AuthnRequest ID from the redirect, then have the gateway's
+# own dev fakeidp mint a signed response for it (see repo README for the
+# full fakeidp mint-response command) and POST it to the returned ACS URL.</pre>
+    </details>
+  </section>
+
+</main>
+
+<footer>
+  Source: <a href="https://github.com/JessicaTemplet/B2B_F_P">github.com/JessicaTemplet/B2B_F_P</a>
+</footer>
+
+<script>
+  let simulatedIP = "127.0.0.1";
+  function setIP(which) {
+    simulatedIP = which === "vpc" ? "127.0.0.1" : "8.8.8.8";
+    document.getElementById("ip-vpc").classList.toggle("active", which === "vpc");
+    document.getElementById("ip-public").classList.toggle("active", which === "public");
+  }
+
+  async function scimCreate() {
+    const out = document.getElementById("scim-out");
+    out.style.display = "block";
+    out.textContent = "Provisioning…";
+    const name = document.getElementById("scim-name").value.trim();
+    const [given, ...rest] = name.split(" ");
+    const family = rest.join(" ") || given;
+    const body = {
+      schemas: ["urn:ietf:params:scim:schemas:core:2.0:User"],
+      userName: document.getElementById("scim-email").value.trim(),
+      name: { givenName: given, familyName: family },
+      emails: [{ value: document.getElementById("scim-email").value.trim(), primary: true }],
+      active: true,
+      "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User": {
+        department: document.getElementById("scim-dept").value.trim()
+      }
+    };
+    try {
+      const res = await fetch("/scim/acme/v2/Users", {
+        method: "POST",
+        headers: {
+          "Authorization": "Bearer dev-scim-token-change-me",
+          "Content-Type": "application/scim+json"
+        },
+        body: JSON.stringify(body)
+      });
+      const json = await res.json();
+      out.textContent = `HTTP ${res.status}\n\n` + JSON.stringify(json, null, 2);
+    } catch (e) {
+      out.textContent = "Request failed: " + e.message;
+    }
+  }
+
+  async function scimList() {
+    const out = document.getElementById("scim-out");
+    out.style.display = "block";
+    out.textContent = "Loading…";
+    try {
+      const res = await fetch("/scim/acme/v2/Users", {
+        headers: { "Authorization": "Bearer dev-scim-token-change-me" }
+      });
+      const json = await res.json();
+      out.textContent = `HTTP ${res.status}\n\n` + JSON.stringify(json, null, 2);
+    } catch (e) {
+      out.textContent = "Request failed: " + e.message;
+    }
+  }
+
+  async function callReports() {
+    const out = document.getElementById("reports-out");
+    out.style.display = "block";
+    out.textContent = "Calling…";
+    try {
+      const res = await fetch("/api/reports/dashboard", {
+        credentials: "include",
+        headers: { "X-Forwarded-For": simulatedIP }
+      });
+      const text = await res.text();
+      let pretty = text;
+      try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch (_) {}
+      const badge = res.ok
+        ? '<span class="badge ok">ALLOWED</span>'
+        : '<span class="badge err">' + (res.status === 401 ? 'NOT SIGNED IN' : 'DENIED') + '</span>';
+      out.innerHTML = `HTTP ${res.status} ${badge}\n\n` + pretty;
+    } catch (e) {
+      out.textContent = "Request failed: " + e.message;
+    }
+  }
+
+  async function checkSession() {
+    const statusEl = document.getElementById("oidc-status");
+    try {
+      const res = await fetch("/api/reports/dashboard", {
+        credentials: "include",
+        headers: { "X-Forwarded-For": "127.0.0.1" }
+      });
+      if (res.status === 401) {
+        statusEl.innerHTML = '<span class="badge neutral">not signed in</span>';
+      } else {
+        statusEl.innerHTML = '<span class="badge ok">signed in</span> <span style="color:var(--muted);font-size:0.85rem">(session cookie active)</span>';
+        document.getElementById("oidc-login-btn").textContent = "Sign in again";
+      }
+    } catch (_) {
+      statusEl.innerHTML = '<span class="badge neutral">unknown</span>';
+    }
+  }
+  checkSession();
+</script>
+
+</body>
+</html>
