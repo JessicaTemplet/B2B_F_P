@@ -47,7 +47,6 @@ func main() {
 		"policies/fakeidp-metadata.xml", "data/fakeidp.key.pem")
 
 	go runMockBackend(":9090")
-	go runMockOIDC(":9091", "http://localhost:9091", "bob@acme-corp.example", "Engineering")
 
 	runGateway("config.json")
 }
@@ -102,6 +101,13 @@ func runGateway(configPath string) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(demoHTML)
 	})
+
+	// Mounted here (not a separate :9091 listener) so every URL in its own
+	// discovery document — including the one the browser gets redirected
+	// to — is reachable from outside the container. See tenant config's
+	// oidc_issuer, which must match base+"/mock-oidc" exactly.
+	mockOIDC := newMockOIDCHandler(base+"/mock-oidc", "bob@acme-corp.example", "Engineering")
+	mux.Handle("/mock-oidc/", http.StripPrefix("/mock-oidc", mockOIDC))
 
 	scimSrv := &scim.Server{Store: st, Tenants: cfg.Tenants, PublicBaseURL: func(t string) string {
 		return publicBase(t) + "/scim/" + t
@@ -206,14 +212,16 @@ func runMockBackend(addr string) {
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
 
-// ---- mockoidc (from cmd/mockoidc/main.go) ----
+// ---- mockoidc (from cmd/mockoidc/main.go, adapted to mount on the shared
+// public mux instead of listening on its own port — see the call site in
+// runGateway for why) ----
 
 type pendingCode struct {
 	nonce, redirectURI, clientID, subject, email, department string
 	issuedAt                                                 time.Time
 }
 
-func runMockOIDC(addr, issuer, subject, department string) {
+func newMockOIDCHandler(issuer, subject, department string) http.Handler {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		log.Fatal(err)
@@ -302,8 +310,8 @@ func runMockOIDC(addr, issuer, subject, department string) {
 		})
 	})
 
-	log.Printf("mockoidc listening on %s (issuer=%s, simulated user=%s dept=%s)", addr, issuer, subject, department)
-	log.Fatal(http.ListenAndServe(addr, mux))
+	log.Printf("mock oidc mounted (issuer=%s, simulated user=%s dept=%s)", issuer, subject, department)
+	return mux
 }
 
 func signJWT(priv *rsa.PrivateKey, kid string, claims map[string]any) (string, error) {
