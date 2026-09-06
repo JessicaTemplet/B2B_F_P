@@ -14,6 +14,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
@@ -37,6 +38,9 @@ import (
 	"b2bfp/internal/scim"
 	"b2bfp/internal/store"
 )
+
+//go:embed web/demo.html
+var demoHTML []byte
 
 func main() {
 	ensureFakeIDP("https://fake-idp.example.com/entity", "http://localhost:8443/__fakeidp_unused__",
@@ -93,6 +97,11 @@ func runGateway(configPath string) {
 	publicBase := func(tenantID string) string { return base }
 
 	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(demoHTML)
+	})
 
 	scimSrv := &scim.Server{Store: st, Tenants: cfg.Tenants, PublicBaseURL: func(t string) string {
 		return publicBase(t) + "/scim/" + t
