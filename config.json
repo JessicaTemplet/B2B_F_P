@@ -1,7 +1,7 @@
 {
   "listen_addr": ":8443",
   "database_path": "data/gateway.db",
-  "public_base_url": "http://localhost:8443",
+  "public_base_url": "https://b2bfp.syntagmata.com",
   "policy_file": "policies/policies.json",
   "environment_file": "policies/environment.json",
   "saml_key_dir": "data/saml-keys",
@@ -16,7 +16,7 @@
       "name": "Acme Corp",
       "scim_bearer_token": "dev-scim-token-change-me",
       "saml_idp_metadata_file": "policies/fakeidp-metadata.xml",
-      "oidc_issuer": "http://localhost:9091",
+      "oidc_issuer": "https://b2bfp.syntagmata.com/mock-oidc",
       "oidc_client_id": "acme-client",
       "oidc_client_secret": "",
       "backend_url": "http://localhost:9090"
