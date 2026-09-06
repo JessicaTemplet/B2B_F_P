@@ -1,0 +1,11 @@
+[project]
+name = "B2B_F_P"
+version = "0.1.0"
+description = "A short description of the project"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
